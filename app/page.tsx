@@ -50,6 +50,12 @@ type ApiErrorResponse = {
 const POLL_INTERVAL_MS = 2500
 const POLL_MAX_ATTEMPTS = 120
 const POLL_MAX_HARD_ERROR_RETRIES = 3
+const POLL_MAX_TRANSIENT_ERROR_RETRIES = 8
+const NON_RETRYABLE_ERROR_CODES = new Set([
+  'TLS_CERT_ERROR',
+  'DB_CONNECTIVITY_ERROR',
+  'INTERNAL_ERROR',
+])
 
 export default function Page() {
   const [isDragging, setIsDragging] = useState(false)
@@ -164,21 +170,30 @@ export default function Page() {
             ? payload.error.trim()
             : `任务状态查询失败（HTTP ${response.status}）`
         const code = payload.code?.trim().toUpperCase()
+        const isNonRetryableCode = code
+          ? NON_RETRYABLE_ERROR_CODES.has(code)
+          : false
         const shouldRetry =
-          response.status === 404 ||
+          !isNonRetryableCode &&
+          (response.status === 404 ||
           response.status === 429 ||
           response.status === 502 ||
           response.status === 503 ||
           response.status === 504 ||
           (response.status >= 500 && attempt < POLL_MAX_HARD_ERROR_RETRIES)
+          )
 
-        if (shouldRetry && attempt < POLL_MAX_ATTEMPTS) {
+        if (
+          shouldRetry &&
+          attempt < POLL_MAX_ATTEMPTS &&
+          attempt < POLL_MAX_TRANSIENT_ERROR_RETRIES
+        ) {
           await sleep(POLL_INTERVAL_MS)
           return pollJobStatus(jobId, session, attempt + 1)
         }
 
         setIsUploading(false)
-        if (code === 'TLS_CERT_ERROR' || code === 'DB_CONNECTIVITY_ERROR') {
+        if (isNonRetryableCode) {
           setErrorMessage(message)
           return
         }
