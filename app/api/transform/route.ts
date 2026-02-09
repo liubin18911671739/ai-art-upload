@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server'
 import { AI_EXECUTION_MODE, AI_PROVIDER } from '@/lib/ai-config'
 import { getDb } from '@/lib/db'
 import { formatDbConnectivityMessage } from '@/lib/db-errors'
+import { formatTlsErrorMessage } from '@/lib/network'
 import { createMockJob, markMockJobSucceeded } from '@/lib/poc-mock-store'
 import { getMockJobDelayMs, isPocMockMode } from '@/lib/poc-config'
 import { extractRunpodJobId, submitJob } from '@/lib/runpod'
@@ -284,6 +285,17 @@ export async function POST(request: Request) {
           code: 'DB_CONNECTIVITY_ERROR',
         },
         { status: 503 },
+      )
+    }
+
+    const tlsErrorMessage = formatTlsErrorMessage(error)
+    if (tlsErrorMessage) {
+      return NextResponse.json(
+        {
+          error: tlsErrorMessage,
+          code: 'TLS_CERT_ERROR',
+        },
+        { status: 502 },
       )
     }
 

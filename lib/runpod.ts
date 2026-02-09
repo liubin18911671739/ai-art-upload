@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import { isPocMockMode } from '@/lib/poc-config'
+import { serverFetch } from '@/lib/network'
 import { extractStorageKeyFromPublicUrl } from '@/lib/storage'
 import { downloadObjectFromSupabase } from '@/lib/supabase'
 import {
@@ -200,7 +201,7 @@ async function buildRunpodImageInput(imageUrl: string): Promise<RunpodImageInput
   }
 
   if (!body) {
-    const response = await fetch(imageUrl, {
+    const response = await serverFetch(imageUrl, {
       method: 'GET',
       cache: 'no-store',
     })
@@ -610,7 +611,7 @@ export async function submitJob(input: PreparePayloadInput): Promise<SubmitJobRe
   })
   ensureRunRequestSizeLimit(requestBody)
 
-  const response = await fetch(url, {
+  const response = await serverFetch(url, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,

@@ -1,3 +1,5 @@
+import { serverFetch } from '@/lib/network'
+
 type ShopifyAdminConfig = {
   storeDomain: string
   adminAccessToken: string
@@ -61,7 +63,7 @@ export async function shopifyGraphql<TData>(
   const config = getShopifyAdminConfig()
   const url = `https://${config.storeDomain}/admin/api/${config.apiVersion}/graphql.json`
 
-  const response = await fetch(url, {
+  const response = await serverFetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

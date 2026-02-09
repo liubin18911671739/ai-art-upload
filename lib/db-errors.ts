@@ -19,6 +19,11 @@ function getConnectionHost(connectionString: string) {
   }
 }
 
+function extractSupabaseProjectRef(host: string) {
+  const match = /^db\.([a-z0-9-]+)\.supabase\.co$/i.exec(host.trim())
+  return match?.[1] ?? null
+}
+
 function findDbDnsError(error: unknown): ErrorWithCode | null {
   const seen = new Set<unknown>()
   let current: unknown = error
@@ -51,12 +56,18 @@ export function formatDbConnectivityMessage(error: unknown) {
   const host = dnsError.hostname || hostFromEnv || 'unknown-host'
 
   if (host.endsWith('.supabase.co')) {
+    const projectRef = extractSupabaseProjectRef(host)
+    const poolerTemplate = projectRef
+      ? `postgresql://postgres.${projectRef}:<DB_PASSWORD>@aws-0-<region>.pooler.supabase.com:6543/postgres?sslmode=verify-full`
+      : `postgresql://postgres.<project-ref>:<DB_PASSWORD>@aws-0-<region>.pooler.supabase.com:6543/postgres?sslmode=verify-full`
+
     return (
       `Database host lookup failed for "${host}". ` +
       'Update SUPABASE_DB_URL using the current connection string from Supabase Dashboard ' +
       '(Project Settings -> Database -> Connection string). ' +
       'If direct host "db.<project-ref>.supabase.co" does not resolve, use the Transaction Pooler URL ' +
-      '(host like "aws-0-<region>.pooler.supabase.com", port 6543, user "postgres.<project-ref>").'
+      '(host like "aws-0-<region>.pooler.supabase.com", port 6543, user "postgres.<project-ref>"). ' +
+      `Template: ${poolerTemplate}`
     )
   }
 

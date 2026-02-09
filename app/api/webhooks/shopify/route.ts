@@ -6,6 +6,7 @@ import getRawBody from 'raw-body'
 
 import { getDb } from '@/lib/db'
 import { isShopifyEnabled } from '@/lib/feature-flags'
+import { serverFetch } from '@/lib/network'
 import { isPocMockMode } from '@/lib/poc-config'
 import { extractRunpodJobId, submitJob } from '@/lib/runpod'
 import {
@@ -160,7 +161,7 @@ async function scheduleRunpodAndPersistJob(args: {
   const client = await db.connect()
 
   try {
-    const headResponse = await fetch(args.imageUrl, {
+    const headResponse = await serverFetch(args.imageUrl, {
       method: 'HEAD',
       signal: AbortSignal.timeout(2500),
     })

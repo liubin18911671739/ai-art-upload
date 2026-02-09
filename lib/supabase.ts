@@ -1,3 +1,5 @@
+import { serverFetch } from '@/lib/network'
+
 function getRequiredEnv(name: string) {
   const value = process.env[name]
   if (!value) {
@@ -95,7 +97,7 @@ function buildSupabaseServiceRoleHeaders(contentType?: string) {
 }
 
 export async function headObjectInSupabase(key: string) {
-  return fetch(buildSupabaseObjectApiUrl(key), {
+  return serverFetch(buildSupabaseObjectApiUrl(key), {
     method: 'HEAD',
     headers: buildSupabaseServiceRoleHeaders(),
     cache: 'no-store',
@@ -103,7 +105,7 @@ export async function headObjectInSupabase(key: string) {
 }
 
 export async function downloadObjectFromSupabase(key: string) {
-  const response = await fetch(buildSupabaseObjectApiUrl(key), {
+  const response = await serverFetch(buildSupabaseObjectApiUrl(key), {
     method: 'GET',
     headers: buildSupabaseServiceRoleHeaders(),
     cache: 'no-store',
@@ -127,7 +129,7 @@ export async function uploadObjectToSupabase(args: {
   body: ArrayBuffer
   contentType: string
 }) {
-  const response = await fetch(buildSupabaseObjectApiUrl(args.key), {
+  const response = await serverFetch(buildSupabaseObjectApiUrl(args.key), {
     method: 'POST',
     headers: {
       ...buildSupabaseServiceRoleHeaders(args.contentType),
