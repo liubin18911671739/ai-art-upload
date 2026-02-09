@@ -277,7 +277,8 @@ export default function Page() {
         })
 
         if (!uploadResponse.ok) {
-          throw new Error('上传文件到存储服务失败')
+          const errorPayload = await uploadResponse.json().catch(() => ({}))
+          throw new Error(errorPayload.error ?? '上传文件到存储服务失败')
         }
 
         setSourceImageUrl(presigned.publicUrl)

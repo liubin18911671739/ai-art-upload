@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import { isPocMockMode } from '@/lib/poc-config'
+import { extractStorageKeyFromPublicUrl } from '@/lib/storage'
+import { downloadObjectFromSupabase } from '@/lib/supabase'
 import {
   mimeToExtension,
   validateMime,
@@ -184,21 +186,40 @@ function resolveComfyOrgApiKey() {
 }
 
 async function buildRunpodImageInput(imageUrl: string): Promise<RunpodImageInput> {
-  const response = await fetch(imageUrl, {
-    method: 'GET',
-    cache: 'no-store',
-  })
+  let body: ArrayBuffer | null = null
+  let contentTypeRaw = ''
+  let storageError: Error | null = null
 
-  if (!response.ok) {
-    throw new Error(
-      `Failed to load source image for RunPod images input: ${response.status} ${response.statusText}`,
-    )
+  try {
+    const key = extractStorageKeyFromPublicUrl(imageUrl)
+    const downloaded = await downloadObjectFromSupabase(key)
+    body = downloaded.body
+    contentTypeRaw = downloaded.contentType
+  } catch (error) {
+    storageError = error instanceof Error ? error : new Error(String(error))
   }
 
-  const bytes = new Uint8Array(await response.arrayBuffer())
+  if (!body) {
+    const response = await fetch(imageUrl, {
+      method: 'GET',
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const hint = storageError ? `; auth fetch failed: ${storageError.message}` : ''
+      throw new Error(
+        `Failed to load source image for RunPod images input: ${response.status} ${response.statusText}${hint}`,
+      )
+    }
+
+    body = await response.arrayBuffer()
+    contentTypeRaw = response.headers.get('content-type') ?? ''
+  }
+
+  const bytes = new Uint8Array(body)
   validateSize(bytes.byteLength)
 
-  const contentType = validateMime(response.headers.get('content-type') ?? '')
+  const contentType = validateMime(contentTypeRaw)
   const ext = mimeToExtension(contentType)
   const fileNameBase = process.env.RUNPOD_INPUT_IMAGE_NAME?.trim() || 'input-image'
   const fileName = fileNameBase.includes('.')

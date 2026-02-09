@@ -6,6 +6,22 @@ function getRequiredEnv(name: string) {
   return value
 }
 
+function decodeJwtPayload(token: string) {
+  const parts = token.split('.')
+  if (parts.length < 2) {
+    return null
+  }
+
+  try {
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    const json = Buffer.from(base64, 'base64').toString('utf8')
+    const parsed = JSON.parse(json) as { role?: string }
+    return parsed
+  } catch {
+    return null
+  }
+}
+
 function trimTrailingSlash(value: string) {
   return value.replace(/\/+$/, '')
 }
@@ -23,7 +39,17 @@ export function getSupabaseUrl() {
 }
 
 export function getSupabaseServiceRoleKey() {
-  return getRequiredEnv('SUPABASE_SERVICE_ROLE_KEY')
+  const key = getRequiredEnv('SUPABASE_SERVICE_ROLE_KEY')
+  const payload = decodeJwtPayload(key)
+  const role = payload?.role?.trim().toLowerCase()
+
+  if (role && role !== 'service_role') {
+    throw new Error(
+      `SUPABASE_SERVICE_ROLE_KEY has role "${role}". Please use the service_role key from Supabase project settings.`,
+    )
+  }
+
+  return key
 }
 
 export function getSupabaseStorageBucket() {
@@ -48,22 +74,63 @@ export function buildSupabasePublicObjectUrl(key: string) {
   return `${base}/${encodedKey}`
 }
 
+function buildSupabaseObjectApiUrl(key: string) {
+  const bucket = getSupabaseStorageBucket()
+  const encodedKey = encodeStorageKey(key)
+  return `${getSupabaseUrl()}/storage/v1/object/${bucket}/${encodedKey}`
+}
+
+function buildSupabaseServiceRoleHeaders(contentType?: string) {
+  const token = getSupabaseServiceRoleKey()
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    apikey: token,
+  }
+
+  if (contentType) {
+    headers['Content-Type'] = contentType
+  }
+
+  return headers
+}
+
+export async function headObjectInSupabase(key: string) {
+  return fetch(buildSupabaseObjectApiUrl(key), {
+    method: 'HEAD',
+    headers: buildSupabaseServiceRoleHeaders(),
+    cache: 'no-store',
+  })
+}
+
+export async function downloadObjectFromSupabase(key: string) {
+  const response = await fetch(buildSupabaseObjectApiUrl(key), {
+    method: 'GET',
+    headers: buildSupabaseServiceRoleHeaders(),
+    cache: 'no-store',
+  })
+
+  if (!response.ok) {
+    const raw = await response.text()
+    throw new Error(
+      `Supabase download failed (${response.status} ${response.statusText}): ${raw}`,
+    )
+  }
+
+  return {
+    body: await response.arrayBuffer(),
+    contentType: response.headers.get('content-type') ?? '',
+  }
+}
+
 export async function uploadObjectToSupabase(args: {
   key: string
-  body: Uint8Array
+  body: ArrayBuffer
   contentType: string
 }) {
-  const bucket = getSupabaseStorageBucket()
-  const encodedKey = encodeStorageKey(args.key)
-  const url = `${getSupabaseUrl()}/storage/v1/object/${bucket}/${encodedKey}`
-  const token = getSupabaseServiceRoleKey()
-
-  const response = await fetch(url, {
+  const response = await fetch(buildSupabaseObjectApiUrl(args.key), {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${token}`,
-      apikey: token,
-      'Content-Type': args.contentType,
+      ...buildSupabaseServiceRoleHeaders(args.contentType),
       'x-upsert': 'false',
     },
     body: args.body,

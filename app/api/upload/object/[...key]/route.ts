@@ -34,7 +34,7 @@ export async function PUT(
       request.headers.get('content-type') ?? 'application/octet-stream',
     )
 
-    const body = new Uint8Array(await request.arrayBuffer())
+    const body = await request.arrayBuffer()
     validateSize(body.byteLength)
 
     await uploadObjectToSupabase({

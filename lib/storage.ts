@@ -1,4 +1,4 @@
-import { buildSupabasePublicObjectUrl, getSupabaseStoragePublicDomain } from '@/lib/supabase'
+import { getSupabaseStoragePublicDomain, headObjectInSupabase } from '@/lib/supabase'
 import { getMockStoredObject } from '@/lib/poc-mock-store'
 import { isPocMockMode } from '@/lib/poc-config'
 import { UploadValidationError } from '@/lib/upload-validation'
@@ -67,11 +67,7 @@ export async function headStoredObject(key: string) {
     }
   }
 
-  const objectUrl = buildSupabasePublicObjectUrl(key)
-  const response = await fetch(objectUrl, {
-    method: 'HEAD',
-    cache: 'no-store',
-  })
+  const response = await headObjectInSupabase(key)
 
   if (!response.ok) {
     if (response.status === 404) {
