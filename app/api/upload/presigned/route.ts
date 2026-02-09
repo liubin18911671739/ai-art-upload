@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { v4 as uuid } from 'uuid'
+import { randomUUID } from 'node:crypto'
 
 import { isPocMockMode } from '@/lib/poc-config'
 import { getS3PublicDomain } from '@/lib/storage'
@@ -43,7 +43,7 @@ type PresignedUploadRequest = {
 
 function createObjectKey(contentType: string) {
   const ext = mimeToExtension(validateMime(contentType))
-  return `uploads/${Date.now()}-${uuid()}.${ext}`
+  return `uploads/${Date.now()}-${randomUUID()}.${ext}`
 }
 
 function createInternalUploadUrl(key: string) {

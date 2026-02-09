@@ -4,62 +4,86 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Next.js 16 application using React 19, TypeScript, and Tailwind CSS. The UI is built with shadcn/ui components (Radix UI primitives). The app is an AI art transformation interface where users upload images and select art styles (sketch, watercolor, oil painting).
+AI art transformation app (Next.js 16 + React 19) where users upload images and select art styles (sketch, watercolor, oil painting). Processing uses RunPod Serverless with async webhook callbacks.
 
 ## Commands
 
 - `pnpm dev` - Start development server
 - `pnpm build` - Build for production
 - `pnpm start` - Start production server
-- `pnpm lint` - Run ESLint
+- `pnpm lint` - Run ESLint (flat config)
 
-**Note**: TypeScript build errors are ignored in `next.config.mjs` (`ignoreBuildErrors: true`).
+## Architecture Overview
 
-## Architecture
+### Async Processing Flow
 
-### App Structure (Next.js App Router)
+1. Frontend uploads image to Supabase Storage via pre-signed URL
+2. Frontend calls `/api/transform` with imageUrl and style
+3. Backend submits RunPod job with webhook URL
+4. RunPod calls `/api/webhooks/runpod` when complete
+5. Frontend polls `/api/jobs/[runpodId]` for status/results
 
-- `app/` - App Router pages and layouts
-  - `layout.tsx` - Root layout, defaults to dark mode (`className="dark"`)
-  - `page.tsx` - Main page with drag-and-drop upload and style selection
-  - `globals.css` - Global styles with CSS custom properties for theming
+### Dual Storage Strategy
 
-### Components
+- **Production**: Supabase Storage (S3-compatible)
+- **Mock Mode**: In-memory storage (`POC_MOCK_MODE=true`)
 
-- `components/ui/` - shadcn/ui components (50+ Radix-based components)
-  - Use `@/components/ui/*` imports
-  - All use Tailwind with CSS variables for theming
-- `components/theme-provider.tsx` - Wrapper around `next-themes`
+All storage operations go through `lib/storage.ts` which routes to the appropriate backend based on `isPocMockMode()`.
 
-### Styling System
+### Key API Routes
 
-Uses HSL color values via CSS custom properties defined in `globals.css`:
-- Dark mode is forced at root (`html className="dark"` in layout.tsx)
-- Primary color in dark mode: `214 100% 60%` (blue)
-- Theme colors referenced via Tailwind: `bg-primary`, `text-foreground`, etc.
+| Route | Purpose |
+|-------|---------|
+| `/api/upload/presigned` | Generate Supabase pre-signed upload URL |
+| `/api/transform` | Submit AI transformation job to RunPod |
+| `/api/jobs/[runpodId]` | Poll job status from database |
+| `/api/webhooks/runpod` | Receive RunPod completion callbacks |
+| `/api/webhooks/shopify` | Optional Shopify order processing |
+
+### Core Libraries (`lib/`)
+
+| File | Purpose |
+|------|---------|
+| `runpod.ts` | Workflow template loading, seed injection, job submission |
+| `db.ts` | Neon database connection pool singleton |
+| `storage.ts` | Storage abstraction (Supabase vs mock) |
+| `poc-config.ts` | Mock mode configuration |
+| `upload-validation.ts` | File type/size validation, error codes |
+
+### Workflow Templates
+
+Style-specific ComfyUI workflows stored at repo root:
+- `workflow_api_sketch.json`
+- `workflow_api_watercolor.json`
+- `workflow_api_oil.json`
+- `workflow_api.json` (default fallback)
+
+`lib/runpod.ts` handles: template loading, seed injection, checkpoint replacement, `{{style}}` placeholder substitution.
+
+## Error Handling
+
+Unified error codes via `UploadValidationError` class:
+- `INVALID_PAYLOAD`
+- `UNSUPPORTED_CONTENT_TYPE`
+- `FILE_TOO_LARGE`
+- `INVALID_IMAGE_URL`
+- `OBJECT_NOT_FOUND`
+
+## Styling System
+
+Uses HSL color values via CSS custom properties defined in `app/globals.css`:
+- Dark mode forced at root (`html className="dark"` in `app/layout.tsx`)
+- Theme colors: `bg-primary`, `text-foreground`, etc.
 - Custom animations: `accordion-down`, `accordion-up`
 
-### Path Aliases
+## Path Aliases
 
 ```typescript
 "@/*": ["./*"]
 ```
 
-Common imports:
-- `@/components/*` - Components
-- `@/lib/utils` - Utilities (includes `cn()` for class merging)
-- `@/hooks/*` - Custom hooks
+## Important Configuration
 
-### Key Patterns
-
-1. **Utility function**: `cn()` from `@/lib/utils` merges clsx and tailwind-merge
-2. **Icons**: lucide-react for all icon components
-3. **Forms**: react-hook-form with zod validation via @hookform/resolvers
-4. **Client components**: Pages use `'use client'` directive for interactivity
-
-## Configuration Notes
-
-- `next.config.mjs` has TypeScript errors ignored and image optimization disabled
-- Tailwind uses `tailwindcss-animate` plugin
-- Uses pnpm as package manager
-- Components configured via `components.json` for shadcn/ui CLI
+- `next.config.mjs`: 10MB body limit for Server Actions, images unoptimized
+- ESLint flat config with custom rules (allows `console.warn/error`)
+- `pnpm` as package manager
