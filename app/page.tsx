@@ -2,12 +2,45 @@
 
 import React from "react"
 
-import { useState, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { Upload, Sparkles, Wand2, Palette, Droplets } from 'lucide-react'
+import {
+  ALLOWED_IMAGE_MIME,
+  MAX_UPLOAD_BYTES,
+  normalizeMime,
+} from '@/lib/upload-validation'
 
 type ArtStyle = 'sketch' | 'watercolor' | 'oil' | null
+
+type PresignedUploadResponse = {
+  uploadUrl: string
+  publicUrl: string
+  key: string
+  maxBytes: number
+  allowedContentTypes: readonly string[]
+}
+
+type TransformResponse = {
+  ok: boolean
+  orderId: string
+  runpodId: string
+  seed: number
+  status: string
+  provider: string
+  mode: string
+}
+
+type JobStatusResponse = {
+  ok: boolean
+  runpodId: string
+  orderId: string
+  status: string
+  outputImageUrl: string | null
+  outputVideoUrl: string | null
+}
 
 export default function Page() {
   const [isDragging, setIsDragging] = useState(false)
@@ -15,7 +48,143 @@ export default function Page() {
   const [uploadProgress, setUploadProgress] = useState(0)
   const [selectedStyle, setSelectedStyle] = useState<ArtStyle>(null)
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
+  const [sourceImageUrl, setSourceImageUrl] = useState<string | null>(null)
+  const [runpodId, setRunpodId] = useState<string | null>(null)
+  const [orderStatus, setOrderStatus] = useState<string | null>(null)
+  const [outputImageUrl, setOutputImageUrl] = useState<string | null>(null)
+  const [outputVideoUrl, setOutputVideoUrl] = useState<string | null>(null)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [isDownloadingImage, setIsDownloadingImage] = useState(false)
+  const [isDownloadingVideo, setIsDownloadingVideo] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const pollingSessionRef = useRef(0)
+
+  useEffect(() => {
+    return () => {
+      pollingSessionRef.current += 1
+    }
+  }, [])
+
+  const sleep = (ms: number) =>
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, ms)
+    })
+
+  const getErrorText = (error: unknown) => {
+    if (error instanceof Error) {
+      return error.message
+    }
+    return '未知错误'
+  }
+
+  const validateFileInput = (file: File) => {
+    const normalizedMime = normalizeMime(file.type || '')
+    if (!ALLOWED_IMAGE_MIME.includes(normalizedMime as (typeof ALLOWED_IMAGE_MIME)[number])) {
+      throw new Error(`仅支持 ${ALLOWED_IMAGE_MIME.join(', ')} 格式`)
+    }
+
+    if (file.size > MAX_UPLOAD_BYTES) {
+      throw new Error(`文件大小不能超过 ${Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024))}MB`)
+    }
+  }
+
+  const getExtensionFromUrl = (url: string) => {
+    try {
+      const parsed = new URL(url)
+      const filename = parsed.pathname.split('/').pop() ?? ''
+      const ext = filename.split('.').pop()?.toLowerCase()
+      return ext || null
+    } catch {
+      return null
+    }
+  }
+
+  const triggerDownload = (blob: Blob, filename: string) => {
+    const objectUrl = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = objectUrl
+    anchor.download = filename
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(objectUrl)
+  }
+
+  const downloadOutput = async (url: string, kind: 'image' | 'video') => {
+    const setLoading = kind === 'image' ? setIsDownloadingImage : setIsDownloadingVideo
+    const styleName = selectedStyle ?? 'style'
+
+    setLoading(true)
+    try {
+      const response = await fetch(url)
+      if (!response.ok) {
+        throw new Error('下载失败')
+      }
+
+      const blob = await response.blob()
+      const ext = getExtensionFromUrl(url) ?? (kind === 'image' ? 'png' : 'mp4')
+      const filename = `ai-art-${styleName}-${Date.now()}.${ext}`
+      triggerDownload(blob, filename)
+    } catch {
+      setErrorMessage(
+        `下载${kind === 'image' ? '图片' : '视频'}失败，请使用“新标签页打开”链接重试。`,
+      )
+      window.open(url, '_blank', 'noopener,noreferrer')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const pollJobStatus = async (jobId: string, session: number, attempt = 0): Promise<void> => {
+    if (session !== pollingSessionRef.current) {
+      return
+    }
+
+    try {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, {
+        method: 'GET',
+        cache: 'no-store',
+      })
+
+      if (!response.ok) {
+        if (attempt < 120) {
+          await sleep(2500)
+          return pollJobStatus(jobId, session, attempt + 1)
+        }
+        setIsUploading(false)
+        setErrorMessage('轮询任务状态超时，请稍后刷新重试。')
+        return
+      }
+
+      const data = (await response.json()) as JobStatusResponse
+      setOrderStatus(data.status)
+      setOutputImageUrl(data.outputImageUrl)
+      setOutputVideoUrl(data.outputVideoUrl)
+
+      if (data.status === 'SUCCEEDED') {
+        setUploadProgress(100)
+        setIsUploading(false)
+        return
+      }
+
+      if (data.status === 'FAILED') {
+        setIsUploading(false)
+        setErrorMessage('任务执行失败，请更换图片或风格后重试。')
+        return
+      }
+
+      setUploadProgress((prev) => Math.min(95, prev + 3))
+      await sleep(2500)
+      return pollJobStatus(jobId, session, attempt + 1)
+    } catch {
+      if (attempt < 120) {
+        await sleep(2500)
+        return pollJobStatus(jobId, session, attempt + 1)
+      }
+      setIsUploading(false)
+      setErrorMessage('网络异常，无法获取任务状态。')
+    }
+  }
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
@@ -44,21 +213,104 @@ export default function Page() {
   }
 
   const handleFileUpload = (file: File) => {
-    setUploadedFile(file)
-    setIsUploading(true)
-    setUploadProgress(0)
+    if (!selectedStyle) {
+      setErrorMessage('请先选择艺术风格，再上传图像。')
+      return
+    }
 
-    // 模拟上传进度
-    const interval = setInterval(() => {
-      setUploadProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(interval)
-          setTimeout(() => setIsUploading(false), 500)
-          return 100
+    try {
+      validateFileInput(file)
+    } catch (error) {
+      setErrorMessage(getErrorText(error))
+      return
+    }
+
+    const session = Date.now()
+    pollingSessionRef.current = session
+
+    setUploadedFile(file)
+    setSourceImageUrl(null)
+    setRunpodId(null)
+    setOrderStatus(null)
+    setOutputImageUrl(null)
+    setOutputVideoUrl(null)
+    setErrorMessage(null)
+    setIsUploading(true)
+    setUploadProgress(5)
+
+    void (async () => {
+      try {
+        const presignedResponse = await fetch('/api/upload/presigned', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            filename: file.name,
+            contentType: file.type || 'application/octet-stream',
+          }),
+        })
+
+        if (!presignedResponse.ok) {
+          const error = await presignedResponse.json().catch(() => ({}))
+          throw new Error(error.error ?? '获取上传地址失败')
         }
-        return prev + 10
-      })
-    }, 200)
+
+        const presigned = (await presignedResponse.json()) as PresignedUploadResponse
+        const allowedTypes = new Set(presigned.allowedContentTypes)
+        const normalizedFileType = normalizeMime(file.type || '')
+        if (!allowedTypes.has(normalizedFileType)) {
+          throw new Error('文件类型与服务端策略不匹配')
+        }
+        if (file.size > presigned.maxBytes) {
+          throw new Error(`文件大小超限（最大 ${Math.floor(presigned.maxBytes / (1024 * 1024))}MB）`)
+        }
+
+        setUploadProgress(30)
+
+        const uploadResponse = await fetch(presigned.uploadUrl, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': file.type || 'application/octet-stream',
+          },
+          body: file,
+        })
+
+        if (!uploadResponse.ok) {
+          throw new Error('上传文件到存储服务失败')
+        }
+
+        setSourceImageUrl(presigned.publicUrl)
+        setUploadProgress(60)
+
+        const transformResponse = await fetch('/api/transform', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            imageUrl: presigned.publicUrl,
+            style: selectedStyle,
+          }),
+        })
+
+        if (!transformResponse.ok) {
+          const error = await transformResponse.json().catch(() => ({}))
+          throw new Error(error.error ?? '提交 AI 任务失败')
+        }
+
+        const transform = (await transformResponse.json()) as TransformResponse
+        setRunpodId(transform.runpodId)
+        setOrderStatus(transform.status)
+        setUploadProgress(75)
+
+        await pollJobStatus(transform.runpodId, session)
+      } catch (error) {
+        setIsUploading(false)
+        setUploadProgress(0)
+        setErrorMessage(getErrorText(error))
+      }
+    })()
   }
 
   const handleClick = () => {
@@ -140,7 +392,7 @@ export default function Page() {
                     {uploadedFile ? uploadedFile.name : '拖拽图像到此处'}
                   </h3>
                   <p className="text-muted-foreground">
-                    或点击选择文件 · 支持 JPG, PNG, WebP
+                    或点击选择文件 · 支持 JPG, PNG, WebP（最大 10MB）
                   </p>
                 </div>
 
@@ -175,7 +427,7 @@ export default function Page() {
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*"
+              accept="image/jpeg,image/png,image/webp"
               className="hidden"
               onChange={handleFileSelect}
             />
@@ -236,6 +488,88 @@ export default function Page() {
             })}
           </div>
         </div>
+
+        {/* 状态与结果 */}
+        {(runpodId || outputImageUrl || outputVideoUrl || errorMessage) && (
+          <Card className="p-6 space-y-4">
+            <h2 className="text-xl font-semibold text-foreground">任务状态</h2>
+            {errorMessage && (
+              <p className="text-sm text-red-400">{errorMessage}</p>
+            )}
+            {runpodId && (
+              <p className="text-sm text-muted-foreground break-all">
+                RunPod Job ID: {runpodId}
+              </p>
+            )}
+            {orderStatus && (
+              <p className="text-sm text-muted-foreground">
+                当前状态: {orderStatus}
+              </p>
+            )}
+            {sourceImageUrl && (
+              <div className="space-y-2">
+                <p className="text-sm text-muted-foreground">原图</p>
+                <img
+                  src={sourceImageUrl}
+                  alt="原图"
+                  className="w-full max-h-96 object-contain rounded-md border border-border"
+                />
+              </div>
+            )}
+            {outputImageUrl && (
+              <div className="space-y-2">
+                <p className="text-sm text-muted-foreground">生成结果</p>
+                <img
+                  src={outputImageUrl}
+                  alt="生成结果"
+                  className="w-full max-h-96 object-contain rounded-md border border-border"
+                />
+                <div className="flex gap-3 items-center">
+                  <Button
+                    type="button"
+                    onClick={() => {
+                      void downloadOutput(outputImageUrl, 'image')
+                    }}
+                    disabled={isDownloadingImage}
+                  >
+                    {isDownloadingImage ? '下载中...' : '下载图片'}
+                  </Button>
+                  <a
+                    href={outputImageUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-sm text-muted-foreground underline"
+                  >
+                    新标签页打开图片
+                  </a>
+                </div>
+              </div>
+            )}
+            {outputVideoUrl && (
+              <div className="space-y-2">
+                <div className="flex gap-3 items-center">
+                  <Button
+                    type="button"
+                    onClick={() => {
+                      void downloadOutput(outputVideoUrl, 'video')
+                    }}
+                    disabled={isDownloadingVideo}
+                  >
+                    {isDownloadingVideo ? '下载中...' : '下载视频'}
+                  </Button>
+                  <a
+                    href={outputVideoUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-sm text-muted-foreground underline"
+                  >
+                    新标签页打开视频
+                  </a>
+                </div>
+              </div>
+            )}
+          </Card>
+        )}
       </div>
 
       {/* 添加自定义动画 */}
