@@ -42,6 +42,15 @@ type JobStatusResponse = {
   outputVideoUrl: string | null
 }
 
+type ApiErrorResponse = {
+  error?: string
+  code?: string
+}
+
+const POLL_INTERVAL_MS = 2500
+const POLL_MAX_ATTEMPTS = 120
+const POLL_MAX_HARD_ERROR_RETRIES = 3
+
 export default function Page() {
   const [isDragging, setIsDragging] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
@@ -147,12 +156,33 @@ export default function Page() {
       })
 
       if (!response.ok) {
-        if (attempt < 120) {
-          await sleep(2500)
+        const payload = (await response
+          .json()
+          .catch(() => ({}))) as ApiErrorResponse
+        const message =
+          typeof payload.error === 'string' && payload.error.trim()
+            ? payload.error.trim()
+            : `任务状态查询失败（HTTP ${response.status}）`
+        const code = payload.code?.trim().toUpperCase()
+        const shouldRetry =
+          response.status === 404 ||
+          response.status === 429 ||
+          response.status === 502 ||
+          response.status === 503 ||
+          response.status === 504 ||
+          (response.status >= 500 && attempt < POLL_MAX_HARD_ERROR_RETRIES)
+
+        if (shouldRetry && attempt < POLL_MAX_ATTEMPTS) {
+          await sleep(POLL_INTERVAL_MS)
           return pollJobStatus(jobId, session, attempt + 1)
         }
+
         setIsUploading(false)
-        setErrorMessage('轮询任务状态超时，请稍后刷新重试。')
+        if (code === 'TLS_CERT_ERROR' || code === 'DB_CONNECTIVITY_ERROR') {
+          setErrorMessage(message)
+          return
+        }
+        setErrorMessage(`${message}（runpodId: ${jobId}）`)
         return
       }
 
@@ -174,11 +204,11 @@ export default function Page() {
       }
 
       setUploadProgress((prev) => Math.min(95, prev + 3))
-      await sleep(2500)
+      await sleep(POLL_INTERVAL_MS)
       return pollJobStatus(jobId, session, attempt + 1)
     } catch {
-      if (attempt < 120) {
-        await sleep(2500)
+      if (attempt < POLL_MAX_ATTEMPTS) {
+        await sleep(POLL_INTERVAL_MS)
         return pollJobStatus(jobId, session, attempt + 1)
       }
       setIsUploading(false)

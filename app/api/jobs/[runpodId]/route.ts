@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 
 import { getDb } from '@/lib/db'
+import { formatDbConnectivityMessage } from '@/lib/db-errors'
+import { formatTlsErrorMessage } from '@/lib/network'
 import { getMockJob } from '@/lib/poc-mock-store'
 import { isPocMockMode } from '@/lib/poc-config'
 
@@ -68,9 +70,33 @@ export async function GET(
       outputVideoUrl: row.output_video_url,
     })
   } catch (error) {
+    const dbConnectivityMessage = formatDbConnectivityMessage(error)
+    if (dbConnectivityMessage) {
+      return NextResponse.json(
+        {
+          error: dbConnectivityMessage,
+          code: 'DB_CONNECTIVITY_ERROR',
+        },
+        { status: 503 },
+      )
+    }
+
+    const tlsErrorMessage = formatTlsErrorMessage(error)
+    if (tlsErrorMessage) {
+      return NextResponse.json(
+        {
+          error: tlsErrorMessage,
+          code: 'TLS_CERT_ERROR',
+        },
+        { status: 502 },
+      )
+    }
+
+    console.error('Jobs API failed:', error)
+
     const message = error instanceof Error ? error.message : 'Unknown error'
     return NextResponse.json(
-      { error: `Failed to load job status: ${message}` },
+      { error: `Failed to load job status: ${message}`, code: 'INTERNAL_ERROR' },
       { status: 500 },
     )
   }
