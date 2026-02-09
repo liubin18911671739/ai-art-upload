@@ -1,6 +1,13 @@
 # TODO - AI Art Upload
 
 > 最后更新：2026-02-09
+轮询任务状态超时，请稍后刷新重试。
+
+RunPod Job ID: be367f3e-7db0-4581-bef3-d94129ab92e1-u2
+
+当前状态: PROCESSING
+
+
 
 ## 当前状态
 

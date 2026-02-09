@@ -13,7 +13,6 @@ import {
 } from '@/lib/upload-validation'
 
 const DEFAULT_WORKFLOW_FILE_NAME = 'workflow_api.json'
-const DEFAULT_IMAGE_CHECKPOINT = 'sd_xl_base_1.0.safetensors'
 const STYLE_WORKFLOW_FILES: Record<string, string> = {
   sketch: 'workflow_api_sketch.json',
   watercolor: 'workflow_api_watercolor.json',
@@ -58,6 +57,8 @@ export type SubmitJobResult = {
   response: Record<string, unknown>
 }
 
+export type OrderJobStatus = 'PROCESSING' | 'SUCCEEDED' | 'FAILED'
+
 function getRequiredEnv(name: string) {
   const value = process.env[name]
   if (!value) {
@@ -69,6 +70,13 @@ function getRequiredEnv(name: string) {
 function asObject(value: JsonValue): JsonObject | null {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return value as JsonObject
+  }
+  return null
+}
+
+function asUnknownRecord(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>
   }
   return null
 }
@@ -297,10 +305,11 @@ function resolveCheckpointName(style: string) {
     : ''
   const styleCheckpoint = styleEnvKey ? process.env[styleEnvKey] : ''
   const globalCheckpoint = process.env.RUNPOD_CHECKPOINT_NAME
-  const resolved =
-    styleCheckpoint?.trim() ||
-    globalCheckpoint?.trim() ||
-    DEFAULT_IMAGE_CHECKPOINT
+  const resolved = styleCheckpoint?.trim() || globalCheckpoint?.trim() || ''
+
+  if (!resolved) {
+    return null
+  }
 
   // Guardrail: audio checkpoints will crash image workflows with conv1d shape errors.
   if (/(audio|music|vocoder|encodec|mel|wav)/i.test(resolved)) {
@@ -314,6 +323,10 @@ function resolveCheckpointName(style: string) {
 
 function injectCheckpointName(nodes: NodeObject[], style: string) {
   const checkpointName = resolveCheckpointName(style)
+  if (!checkpointName) {
+    return
+  }
+
   const checkpointNodes = nodes.filter((node) => {
     const inputs = asObject(node.inputs as JsonValue)
     return !!inputs && typeof inputs.ckpt_name === 'string'
@@ -572,6 +585,256 @@ export function extractRunpodJobId(response: Record<string, unknown>) {
   throw new Error(
     `Unable to extract RunPod job id from response: ${JSON.stringify(response)}`,
   )
+}
+
+function normalizeRunpodErrorText(value: string) {
+  const compact = value.replace(/\s+/g, ' ').trim()
+  const limit = 500
+  if (compact.length <= limit) {
+    return compact
+  }
+  return `${compact.slice(0, limit)}...`
+}
+
+function stringifyUnknown(value: unknown) {
+  if (typeof value === 'string') {
+    return value
+  }
+
+  if (
+    typeof value === 'number' ||
+    typeof value === 'boolean' ||
+    value === null
+  ) {
+    return String(value)
+  }
+
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return null
+  }
+}
+
+function tryAssetUrl(value: unknown) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return null
+  }
+
+  const trimmed = value.trim()
+  if (/^data:image\/[a-z0-9.+-]+;base64,/i.test(trimmed)) {
+    return trimmed
+  }
+  if (/^data:video\/[a-z0-9.+-]+;base64,/i.test(trimmed)) {
+    return trimmed
+  }
+
+  try {
+    const parsed = new URL(trimmed)
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.toString()
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+function collectUrlsFromText(text: string) {
+  const urls = text.match(/https?:\/\/[^\s"')]+/g) ?? []
+  let imageUrl: string | null = null
+  let videoUrl: string | null = null
+
+  for (const candidate of urls) {
+    const url = tryAssetUrl(candidate)
+    if (!url) {
+      continue
+    }
+
+    if (!imageUrl && /\.(png|jpe?g|webp|avif|gif)(\?|$)/i.test(url)) {
+      imageUrl = url
+    }
+    if (!videoUrl && /\.(mp4|mov|webm|mkv)(\?|$)/i.test(url)) {
+      videoUrl = url
+    }
+  }
+
+  return { imageUrl, videoUrl }
+}
+
+function findFirstAssetUrlByKeys(
+  value: unknown,
+  keyPattern: RegExp,
+  visited = new Set<unknown>(),
+): string | null {
+  if (visited.has(value)) {
+    return null
+  }
+  visited.add(value)
+
+  const direct = tryAssetUrl(value)
+  if (direct) {
+    return direct
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const nested = findFirstAssetUrlByKeys(item, keyPattern, visited)
+      if (nested) {
+        return nested
+      }
+    }
+    return null
+  }
+
+  const obj = asUnknownRecord(value)
+  if (!obj) {
+    return null
+  }
+
+  for (const [key, nestedValue] of Object.entries(obj)) {
+    if (keyPattern.test(key.toLowerCase())) {
+      const candidate = findFirstAssetUrlByKeys(nestedValue, keyPattern, visited)
+      if (candidate) {
+        return candidate
+      }
+    }
+  }
+
+  for (const nestedValue of Object.values(obj)) {
+    const candidate = findFirstAssetUrlByKeys(nestedValue, keyPattern, visited)
+    if (candidate) {
+      return candidate
+    }
+  }
+
+  return null
+}
+
+export function extractRunpodOutputUrls(message: unknown) {
+  const imageFromKeys = findFirstAssetUrlByKeys(
+    message,
+    /(image|img|output_image|preview|result)/i,
+  )
+  const videoFromKeys = findFirstAssetUrlByKeys(
+    message,
+    /(video|timelapse|time_lapse|output_video)/i,
+  )
+
+  let imageUrl = imageFromKeys
+  let videoUrl = videoFromKeys
+
+  if (typeof message === 'string') {
+    const fromText = collectUrlsFromText(message)
+    imageUrl = imageUrl ?? fromText.imageUrl
+    videoUrl = videoUrl ?? fromText.videoUrl
+  }
+
+  return {
+    imageUrl,
+    videoUrl,
+  }
+}
+
+export function mapRunpodStatusToOrderStatus(status: unknown): OrderJobStatus | null {
+  const normalized = typeof status === 'string' ? status.trim().toUpperCase() : ''
+  if (!normalized) {
+    return null
+  }
+
+  if (normalized === 'COMPLETED') {
+    return 'SUCCEEDED'
+  }
+
+  if (
+    normalized === 'FAILED' ||
+    normalized === 'CANCELLED' ||
+    normalized === 'TIMED_OUT'
+  ) {
+    return 'FAILED'
+  }
+
+  if (
+    normalized === 'IN_QUEUE' ||
+    normalized === 'IN_PROGRESS' ||
+    normalized === 'INITIALIZING' ||
+    normalized === 'QUEUED'
+  ) {
+    return 'PROCESSING'
+  }
+
+  return null
+}
+
+export function extractRunpodFailureReason(response: Record<string, unknown>) {
+  const output = asUnknownRecord(response.output)
+  const nestedOutputError = asUnknownRecord(output?.error)
+  const nestedOutputMessage = asUnknownRecord(output?.message)
+
+  const candidates: unknown[] = [
+    response.error,
+    response.message,
+    output?.error,
+    output?.message,
+    nestedOutputError?.message,
+    nestedOutputMessage?.message,
+    nestedOutputMessage?.error,
+  ]
+
+  for (const candidate of candidates) {
+    const text = stringifyUnknown(candidate)
+    if (typeof text === 'string' && text.trim() !== '') {
+      return normalizeRunpodErrorText(text)
+    }
+  }
+
+  return null
+}
+
+export async function fetchRunpodJobStatus(runpodId: string) {
+  if (!runpodId.trim()) {
+    throw new Error('`runpodId` is required')
+  }
+
+  if (isPocMockMode()) {
+    return {
+      id: runpodId,
+      status: 'MOCK',
+      mock: true,
+    }
+  }
+
+  const endpointId = getRequiredEnv('RUNPOD_ENDPOINT_ID')
+  const apiKey = getRequiredEnv('RUNPOD_API_KEY')
+  const statusUrl = `https://api.runpod.ai/v2/${endpointId}/status/${encodeURIComponent(runpodId)}`
+
+  const response = await serverFetch(statusUrl, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    cache: 'no-store',
+  })
+
+  const raw = await response.text()
+  let parsed: Record<string, unknown> = {}
+  if (raw) {
+    try {
+      const decoded = JSON.parse(raw)
+      parsed = asUnknownRecord(decoded) ?? { raw: decoded }
+    } catch {
+      parsed = { raw }
+    }
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      `RunPod status query failed (${response.status} ${response.statusText}): ${JSON.stringify(parsed)}`,
+    )
+  }
+
+  return parsed
 }
 
 export async function submitJob(input: PreparePayloadInput): Promise<SubmitJobResult> {

@@ -40,6 +40,7 @@ type JobStatusResponse = {
   status: string
   outputImageUrl: string | null
   outputVideoUrl: string | null
+  failureReason?: string | null
 }
 
 type ApiErrorResponse = {
@@ -90,6 +91,31 @@ export default function Page() {
       return error.message
     }
     return '未知错误'
+  }
+
+  const formatFailureMessage = (reason: string | null | undefined) => {
+    const base = '任务执行失败，请重试。'
+    if (!reason) {
+      return `${base} 可尝试更换图片或风格。`
+    }
+
+    const normalized = reason.trim()
+    if (!normalized) {
+      return `${base} 可尝试更换图片或风格。`
+    }
+
+    const shortReason =
+      normalized.length > 220 ? `${normalized.slice(0, 220)}...` : normalized
+
+    if (/ckpt_name|checkpoint|Value not in list/i.test(normalized)) {
+      return (
+        `任务执行失败：模型检查点与 RunPod Endpoint 不匹配。` +
+        `请将 RUNPOD_CHECKPOINT_NAME 设置为 Endpoint 可用模型后重试。` +
+        `（详情：${shortReason}）`
+      )
+    }
+
+    return `任务执行失败：${shortReason}`
   }
 
   const validateFileInput = (file: File) => {
@@ -214,7 +240,7 @@ export default function Page() {
 
       if (data.status === 'FAILED') {
         setIsUploading(false)
-        setErrorMessage('任务执行失败，请更换图片或风格后重试。')
+        setErrorMessage(formatFailureMessage(data.failureReason))
         return
       }
 

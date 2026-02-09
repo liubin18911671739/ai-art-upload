@@ -5,6 +5,12 @@ import { formatDbConnectivityMessage } from '@/lib/db-errors'
 import { formatTlsErrorMessage } from '@/lib/network'
 import { getMockJob } from '@/lib/poc-mock-store'
 import { isPocMockMode } from '@/lib/poc-config'
+import {
+  extractRunpodFailureReason,
+  extractRunpodOutputUrls,
+  fetchRunpodJobStatus,
+  mapRunpodStatusToOrderStatus,
+} from '@/lib/runpod'
 
 export const runtime = 'nodejs'
 
@@ -32,6 +38,7 @@ export async function GET(
         status: job.status,
         outputImageUrl: job.outputImageUrl,
         outputVideoUrl: job.outputVideoUrl,
+        failureReason: null,
       })
     }
 
@@ -61,13 +68,76 @@ export async function GET(
     }
 
     const row = result.rows[0]
+    let resolvedStatus = row.status
+    let resolvedImageUrl = row.output_image_url
+    let resolvedVideoUrl = row.output_video_url
+    let failureReason: string | null = null
+
+    if (row.status !== 'SUCCEEDED') {
+      try {
+        const runpodStatus = await fetchRunpodJobStatus(runpodId)
+        const runpodOrderStatus = mapRunpodStatusToOrderStatus(runpodStatus.status)
+
+        if (row.status === 'PROCESSING' && runpodOrderStatus) {
+          resolvedStatus = runpodOrderStatus
+        }
+
+        const runpodOutput =
+          runpodStatus.output && typeof runpodStatus.output === 'object'
+            ? (runpodStatus.output as Record<string, unknown>)
+            : null
+        const realtimeOutput = extractRunpodOutputUrls(
+          runpodOutput?.message ?? runpodOutput ?? runpodStatus.output ?? null,
+        )
+        resolvedImageUrl = realtimeOutput.imageUrl ?? resolvedImageUrl
+        resolvedVideoUrl = realtimeOutput.videoUrl ?? resolvedVideoUrl
+
+        if (resolvedStatus === 'FAILED') {
+          failureReason = extractRunpodFailureReason(runpodStatus)
+        }
+      } catch (error) {
+        console.error(
+          `Failed to fetch RunPod live status for job ${runpodId}:`,
+          error,
+        )
+      }
+    }
+
+    if (resolvedStatus !== row.status) {
+      await db.query(
+        `
+          UPDATE orders
+          SET status = $2
+          WHERE id = $1
+            AND status <> $2
+        `,
+        [row.order_id, resolvedStatus],
+      )
+    }
+
+    if (
+      resolvedImageUrl !== row.output_image_url ||
+      resolvedVideoUrl !== row.output_video_url
+    ) {
+      await db.query(
+        `
+          UPDATE jobs
+          SET output_image_url = COALESCE($2, output_image_url),
+              output_video_url = COALESCE($3, output_video_url)
+          WHERE runpod_id = $1
+        `,
+        [runpodId, resolvedImageUrl, resolvedVideoUrl],
+      )
+    }
+
     return NextResponse.json({
       ok: true,
       runpodId,
       orderId: row.order_id,
-      status: row.status,
-      outputImageUrl: row.output_image_url,
-      outputVideoUrl: row.output_video_url,
+      status: resolvedStatus,
+      outputImageUrl: resolvedImageUrl,
+      outputVideoUrl: resolvedVideoUrl,
+      failureReason,
     })
   } catch (error) {
     const dbConnectivityMessage = formatDbConnectivityMessage(error)
@@ -92,11 +162,9 @@ export async function GET(
       )
     }
 
-    console.error('Jobs API failed:', error)
-
     const message = error instanceof Error ? error.message : 'Unknown error'
     return NextResponse.json(
-      { error: `Failed to load job status: ${message}`, code: 'INTERNAL_ERROR' },
+      { error: `Failed to load job status: ${message}` },
       { status: 500 },
     )
   }

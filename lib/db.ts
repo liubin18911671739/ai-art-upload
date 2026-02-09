@@ -1,4 +1,5 @@
 import { Pool } from 'pg'
+import { enableInsecureTlsIfConfigured } from '@/lib/network'
 
 let pool: Pool | null = null
 const LEGACY_SSL_MODE_ALIASES = new Set(['prefer', 'require', 'verify-ca'])
@@ -29,6 +30,8 @@ function normalizeConnectionString(connectionString: string) {
 }
 
 function createPool() {
+  enableInsecureTlsIfConfigured()
+
   const connectionString = process.env.SUPABASE_DB_URL || process.env.DATABASE_URL
 
   if (!connectionString) {
