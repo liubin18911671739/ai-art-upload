@@ -1,4 +1,4 @@
-import { Pool } from '@neondatabase/serverless'
+import { neonConfig, Pool } from '@neondatabase/serverless'
 
 let pool: Pool | null = null
 
@@ -8,6 +8,9 @@ function createPool() {
   if (!connectionString) {
     throw new Error('Missing SUPABASE_DB_URL (or DATABASE_URL) environment variable')
   }
+
+  // In Node runtime (without ws), force Pool.query to use HTTP fetch transport.
+  neonConfig.poolQueryViaFetch = true
 
   return new Pool({ connectionString })
 }

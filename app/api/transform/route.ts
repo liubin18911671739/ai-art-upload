@@ -218,41 +218,30 @@ export async function POST(request: Request) {
       const immediateOutput = extractImmediateOutputFromSubmitResponse(
         submitResult.response,
       )
-      const client = await db.connect()
-
-      try {
-        await client.query('BEGIN')
-        await client.query(
-          `
-            INSERT INTO jobs (runpod_id, order_id, output_image_url, output_video_url)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (runpod_id) DO UPDATE
-            SET order_id = EXCLUDED.order_id,
-                output_image_url = COALESCE(EXCLUDED.output_image_url, jobs.output_image_url),
-                output_video_url = COALESCE(EXCLUDED.output_video_url, jobs.output_video_url)
-          `,
-          [
-            runpodId,
-            orderId,
-            immediateOutput.imageUrl,
-            immediateOutput.videoUrl,
-          ],
-        )
-        await client.query(
-          `
-            UPDATE orders
-            SET status = $2
-            WHERE id = $1
-          `,
-          [orderId, isImmediatelyCompleted ? 'SUCCEEDED' : 'PROCESSING'],
-        )
-        await client.query('COMMIT')
-      } catch (error) {
-        await client.query('ROLLBACK').catch(() => undefined)
-        throw error
-      } finally {
-        client.release()
-      }
+      await db.query(
+        `
+          INSERT INTO jobs (runpod_id, order_id, output_image_url, output_video_url)
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT (runpod_id) DO UPDATE
+          SET order_id = EXCLUDED.order_id,
+              output_image_url = COALESCE(EXCLUDED.output_image_url, jobs.output_image_url),
+              output_video_url = COALESCE(EXCLUDED.output_video_url, jobs.output_video_url)
+        `,
+        [
+          runpodId,
+          orderId,
+          immediateOutput.imageUrl,
+          immediateOutput.videoUrl,
+        ],
+      )
+      await db.query(
+        `
+          UPDATE orders
+          SET status = $2
+          WHERE id = $1
+        `,
+        [orderId, isImmediatelyCompleted ? 'SUCCEEDED' : 'PROCESSING'],
+      )
 
       return NextResponse.json({
         ok: true,
@@ -281,6 +270,8 @@ export async function POST(request: Request) {
         { status: error.status },
       )
     }
+
+    console.error('Transform API failed:', error)
 
     const message = error instanceof Error ? error.message : 'Unknown error'
     return NextResponse.json(
