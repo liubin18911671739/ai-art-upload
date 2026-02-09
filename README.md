@@ -32,7 +32,7 @@ pnpm dev
 - **UI**: Tailwind CSS + shadcn/ui (Radix UI)
 - **AI 处理**: RunPod Serverless (async-webhook 模式)
 - **存储**: Supabase Storage (S3 兼容)
-- **数据库**: Supabase Postgres (Neon driver)
+- **数据库**: Supabase Postgres (`pg`)
 
 ## 项目结构
 

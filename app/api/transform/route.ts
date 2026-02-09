@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server'
 
 import { AI_EXECUTION_MODE, AI_PROVIDER } from '@/lib/ai-config'
 import { getDb } from '@/lib/db'
+import { formatDbConnectivityMessage } from '@/lib/db-errors'
 import { createMockJob, markMockJobSucceeded } from '@/lib/poc-mock-store'
 import { getMockJobDelayMs, isPocMockMode } from '@/lib/poc-config'
 import { extractRunpodJobId, submitJob } from '@/lib/runpod'
@@ -253,14 +254,18 @@ export async function POST(request: Request) {
         mode: AI_EXECUTION_MODE,
       })
     } catch (error) {
-      await db.query(
-        `
-          UPDATE orders
-          SET status = 'FAILED'
-          WHERE id = $1
-        `,
-        [orderId],
-      )
+      try {
+        await db.query(
+          `
+            UPDATE orders
+            SET status = 'FAILED'
+            WHERE id = $1
+          `,
+          [orderId],
+        )
+      } catch (markFailedError) {
+        console.error('Failed to mark order as FAILED after submit error:', markFailedError)
+      }
       throw error
     }
   } catch (error) {
@@ -271,13 +276,24 @@ export async function POST(request: Request) {
       )
     }
 
+    const dbConnectivityMessage = formatDbConnectivityMessage(error)
+    if (dbConnectivityMessage) {
+      return NextResponse.json(
+        {
+          error: dbConnectivityMessage,
+          code: 'DB_CONNECTIVITY_ERROR',
+        },
+        { status: 503 },
+      )
+    }
+
     console.error('Transform API failed:', error)
 
     const message = error instanceof Error ? error.message : 'Unknown error'
     return NextResponse.json(
       {
         error: `Failed to submit transform job: ${message}`,
-        code: 'INVALID_PAYLOAD',
+        code: 'INTERNAL_ERROR',
       },
       { status: 500 },
     )
